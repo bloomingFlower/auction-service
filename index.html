@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>경매 시스템 테스트</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>경매 시스템 테스트</h1>
+        
+        입찰자 ID: <input type="number" id="bidderId" value="8" placeholder="입찰자 ID">
+        <div class="item-list">
+            <h2>등록된 물품 목록</h2>
+            <ul id="itemList" class="clickable-list"></ul>
+        </div>
+        <div id="auctionStatusMessage"></div>
+        <div class="item-details" id="itemDetails" style="display: none;">
+            <h2>물품 상세 정보</h2>
+            <p>물품 ID: <span id="itemId"></span></p>
+            <p>물품 이름: <span id="itemName"></span></p>
+            <p>물품 설명: <span id="itemDescription"></span></p>
+            <p>현재 가격: <span id="itemCurrentPrice"></span> 원</p>
+            <p>즉시 구매 가격: <span id="itemBuyNowPrice"></span> 원</p>
+            <p>상태: <span id="itemStatus">로딩 중...</span></p>
+            <p>경매 시작 시간: <span id="itemStartTime"></span></p>
+            <p>경매 종료 시간: <span id="itemEndTime"></span></p>
+            <p>남은 시간: <span id="itemTimeLeft"></span></p>
+
+            <div class="bid-section">
+                <h3>입찰하기</h3>
+                <input type="number" id="bidAmount" placeholder="입찰 금액">
+                <button id="placeBidBtn">입찰</button>
+            </div>
+
+            <div class="buy-now-section">
+                <h3>즉시 구매</h3>
+                <button id="buyNowBtn">즉시 구매</button>
+            </div>
+
+            <div class="bid-history">
+                <h3>입찰 기록</h3>
+                <ul id="itemBidHistory"></ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+[env]
+DATABASE_URL = "postgres://postgres:postgres@localhost:5433/postgres"
+KAFKA_BROKERS = "localhost:9092"
+# RUST_LOG = "info"
+RUST_LOG = "off"
