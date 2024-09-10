@@ -57,8 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     kafka_manager.create_topic("events", 5, 1).await?;
 
     // 이벤트 소싱 시작
-    let event_consumer =
-        EventConsumer::new(Arc::clone(&db_manager.pool), kafka_manager.get_consumer());
+    let event_consumer = EventConsumer::new(Arc::clone(&db_manager), kafka_manager.get_consumer());
     tokio::spawn(async move {
         event_consumer.start().await;
     });

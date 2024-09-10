@@ -25,7 +25,7 @@ pub async fn handle_bid(
     info!("{:<12} --> 입찰 요청 처리 시작: {:?}", "Command", cmd);
 
     // 이벤트 저장소 생성
-    let event_store = PostgresEventStore::new(db_manager.as_pool(), kafka_producer);
+    let event_store = PostgresEventStore::new(Arc::clone(&db_manager), Arc::clone(&kafka_producer));
 
     let item_id = cmd.item_id;
 
@@ -83,7 +83,7 @@ pub async fn handle_buy_now(
     info!("{:<12} --> 즉시 구매 요청 처리 시작: {:?}", "Command", cmd);
 
     // 이벤트 저장소 생성
-    let event_store = PostgresEventStore::new(db_manager.as_pool(), kafka_producer);
+    let event_store = PostgresEventStore::new(Arc::clone(&db_manager), Arc::clone(&kafka_producer));
     // 아이템 상태 확인
     let item = match query::handlers::get_item(&db_manager, cmd.item_id).await {
         Ok(item) => item,

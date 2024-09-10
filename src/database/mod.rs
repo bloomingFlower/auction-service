@@ -72,11 +72,7 @@ impl DatabaseManager {
         Ok(())
     }
 
-    pub fn as_pool(&self) -> Arc<PgPool> {
-        Arc::clone(&self.pool)
-    }
-
-    pub fn pool(&self) -> &Arc<PgPool> {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }
