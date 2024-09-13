@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)] // Clone 트레이트 추가
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum AuctionEvent {
     // 입찰 이벤트
     BidPlaced {

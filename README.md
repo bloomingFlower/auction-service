@@ -208,39 +208,43 @@ cargo test --release --test integration_tests
       ``` rust
       /// 이벤트 소싱 시작
       pub async fn start(&self) {
-          let pool = Arc::clone(&self.pool);
+        let db_manager = Arc::clone(&self.db_manager);
           if let Err(e) = self
-            .kafka_consumer
-            .consume_events("events", move |event| {
-                let pool = Arc::clone(&pool);
+              .kafka_consumer
+              .consume_events("events", move |event| {
+                  let db_manager = Arc::clone(&db_manager);
       ```
 
   8. 이벤트 처리: 소비된 이벤트는 `process_event` 메서드에서 처리합니다. 이벤트 타입에 따라 적절한 핸들러가 호출합니다.
 
       ``` rust
       /// 이벤트 처리
-      async fn process_event(pool: &PgPool, event: Event) -> Result<(), Box<dyn std::error::Error>> {
+      async fn process_event(
+        db_manager: &DatabaseManager,
+          event: Event,
+      ) -> Result<(), Box<dyn std::error::Error>> {
           match event.event_type.as_str() {
-              "BidPlaced" => Self::handle_bid_placed(pool, &event).await?,
-            "BuyNowExecuted" => Self::handle_buy_now_executed(pool, &event).await?,
-            _ => warn!(
-                "{:<12} --> 알 수 없는 이벤트 타입: {}",
-                "EventConsume",
-                event.event_type
-            ),
-        }
-          Ok(())
+              "BidPlaced" => Self::handle_bid_placed(db_manager, &event).await?,
+                "BuyNowExecuted" => Self::handle_buy_now_executed(db_manager, &event).await?,
+                _ => warn!(
+                    "{:<12} --> 알 수 없는 이벤트 타입: {}",
+                    "EventConsume", event.event_type
+                ),
+            }
+            Ok(())
       }
       ```
 
   9. 상태 업데이트: 이벤트 처리 결과로 데이터베이스의 상태가 업데이트합니다. 예를 들어, 입찰 이벤트의 경우 `handle_bid_placed` 메서드에서 처리합니다.
 
       ``` rust
-      async fn handle_bid_placed(pool: &PgPool, event: &Event) -> Result<(), sqlx::Error> {
-          info!("{:<12} --> 입찰(BidPlaced)", "EventConsume");
-          let bid_event: AuctionEvent = serde_json::from_value(event.data.clone())
-              .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-          if let AuctionEvent::BidPlaced {
-              item_id,
-              bidder_id,
+      async fn handle_bid_placed(
+        db_manager: &DatabaseManager,
+        event: &Event,
+      ) -> Result<(), Box<dyn std::error::Error>> {
+        info!("{:<12} --> 입찰(BidPlaced)", "EventConsume");
+        let bid_event: AuctionEvent = serde_json::from_value(event.data.clone())?;
+        if let AuctionEvent::BidPlaced {
+            item_id,
+            bidder_id,
       ```
