@@ -1,6 +1,7 @@
 // region:    --- Imports
 use crate::auction::events::AuctionEvent;
 use crate::database::DatabaseManager;
+use crate::error::{AppError, Result};
 use crate::message_broker::{KafkaConsumer, KafkaProducer};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ pub struct Event {
 /// 이벤트 저장소 트레이트
 #[async_trait]
 pub trait EventStore {
-    async fn append_and_publish_event(&self, event: Event) -> Result<(), String>;
+    async fn append_and_publish_event(&self, event: Event) -> Result<()>;
 }
 
 /// 이벤트 저장소 구현체
@@ -39,7 +40,7 @@ pub struct PostgresEventStore {
 /// 이벤트 저장소 구현체 메서드 구현
 #[async_trait]
 impl EventStore for PostgresEventStore {
-    async fn append_and_publish_event(&self, event: Event) -> Result<(), String> {
+    async fn append_and_publish_event(&self, event: Event) -> Result<()> {
         let event_id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO events (aggregate_id, event_type, data, timestamp, version)
             VALUES ($1, $2, $3, $4, $5)
@@ -53,8 +54,8 @@ impl EventStore for PostgresEventStore {
         .bind(event.version)
         .fetch_optional(self.db_manager.pool())
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "버전 충돌".to_string())?;
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Conflict("버전 충돌".to_string()))?;
 
         // 이벤트를 카프카에 발행
         self.kafka_producer
@@ -64,7 +65,7 @@ impl EventStore for PostgresEventStore {
                 &serde_json::to_string(&event).unwrap(),
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::Kafka(e.to_string()))?;
 
         Ok(())
     }
@@ -121,10 +122,7 @@ impl EventConsumer {
     }
 
     /// 이벤트 처리
-    async fn process_event(
-        db_manager: &DatabaseManager,
-        event: Event,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn process_event(db_manager: &DatabaseManager, event: Event) -> Result<()> {
         match event.event_type.as_str() {
             "BidPlaced" => Self::handle_bid_placed(db_manager, &event).await?,
             "BuyNowExecuted" => Self::handle_buy_now_executed(db_manager, &event).await?,
@@ -137,12 +135,11 @@ impl EventConsumer {
     }
 
     /// 입찰 이벤트 처리
-    async fn handle_bid_placed(
-        db_manager: &DatabaseManager,
-        event: &Event,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_bid_placed(db_manager: &DatabaseManager, event: &Event) -> Result<()> {
         info!("{:<12} --> 입찰(BidPlaced)", "EventConsume");
-        let bid_event: AuctionEvent = serde_json::from_value(event.data.clone())?;
+        let bid_event: AuctionEvent = serde_json::from_value(event.data.clone())
+            .map_err(|e| AppError::Internal(format!("JSON 파싱 오류: {}", e)))?;
+
         if let AuctionEvent::BidPlaced {
             item_id,
             bidder_id,
@@ -151,7 +148,7 @@ impl EventConsumer {
         } = bid_event
         {
             db_manager
-                .transaction::<_, _, sqlx::Error>(|tx| {
+                .transaction(|tx| {
                     Box::pin(async move {
                         // 현재 가격 확인 및 업데이트
                         let result = sqlx::query!(
@@ -160,7 +157,8 @@ impl EventConsumer {
                             item_id
                         )
                         .fetch_optional(&mut **tx)
-                        .await?;
+                        .await
+                        .map_err(AppError::from)?;
 
                         if let Some(row) = result {
                             // 입찰 기록 추가
@@ -172,7 +170,8 @@ impl EventConsumer {
                                 timestamp
                             )
                             .execute(&mut **tx)
-                            .await?;
+                            .await
+                            .map_err(AppError::from)?;
 
                             info!(
                                 "{:<12} --> 입찰 성공: 현재 가격 {}",
@@ -193,12 +192,11 @@ impl EventConsumer {
     }
 
     /// 즉시 구매 이벤트 처리
-    async fn handle_buy_now_executed(
-        db_manager: &DatabaseManager,
-        event: &Event,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_buy_now_executed(db_manager: &DatabaseManager, event: &Event) -> Result<()> {
         info!("{:<12} --> 즉시 구매(BuyNowExecuted)", "EventConsume");
-        let buy_now_event: AuctionEvent = serde_json::from_value(event.data.clone())?;
+        let buy_now_event: AuctionEvent = serde_json::from_value(event.data.clone())
+            .map_err(|e| AppError::Internal(format!("JSON 파싱 오류: {}", e)))?;
+
         if let AuctionEvent::BuyNowExecuted {
             item_id,
             buyer_id,
@@ -207,7 +205,7 @@ impl EventConsumer {
         } = buy_now_event
         {
             db_manager
-                .transaction::<_, _, sqlx::Error>(|tx| {
+                .transaction(|tx| {
                     Box::pin(async move {
                         // 현재 가격 확인 및 상태 업데이트
                         let result = sqlx::query!(
@@ -216,7 +214,8 @@ impl EventConsumer {
                             item_id
                         )
                         .fetch_optional(&mut **tx)
-                        .await?;
+                        .await
+                        .map_err(AppError::from)?;
 
                         if let Some(row) = result {
                             // 즉시 구매 기록 추가
@@ -228,7 +227,8 @@ impl EventConsumer {
                                 timestamp
                             )
                             .execute(&mut **tx)
-                            .await?;
+                            .await
+                            .map_err(AppError::from)?;
 
                             info!(
                                 "{:<12} --> 즉시 구매 성공: 최종 가격 {}",
