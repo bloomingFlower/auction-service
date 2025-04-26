@@ -4,6 +4,7 @@
 // region:    --- Imports
 use crate::auction::events::AuctionEvent;
 use crate::database::DatabaseManager;
+use crate::error::{AppError, Result};
 use crate::event_store::{Event, EventStore};
 use crate::query::handlers;
 use crate::query::handlers::get_item_version;
@@ -22,7 +23,7 @@ pub struct PlaceBidCommand {
 }
 
 /// 즉시 구매 명령
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BuyNowCommand {
     pub item_id: i64,
     pub buyer_id: i64,
@@ -36,54 +37,37 @@ pub async fn handle_place_bid(
     cmd: PlaceBidCommand,
     event_store: &impl EventStore,
     db_manager: &DatabaseManager,
-) -> Result<(), serde_json::Value> {
+) -> Result<()> {
     info!("{:<12} --> 입찰 요청 처리 시작: {:?}", "Command", cmd);
     let mut retries = 0;
 
     while retries < MAX_RETRIES {
         // 현재 버전 조회
-        let current_version = get_item_version(db_manager, cmd.item_id)
-            .await
-            .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
+        let current_version = get_item_version(db_manager, cmd.item_id).await?;
 
         // 아이템 정보 조회
-        let item = handlers::get_item(db_manager, cmd.item_id)
-            .await
-            .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
+        let item = handlers::get_item(db_manager, cmd.item_id).await?;
 
         let now = Utc::now();
 
         // 경매 상태 및 시간 검증
         if now < item.start_time {
-            return Err(serde_json::json!({
-                "error": "경매가 아직 시작되지 않았습니다.",
-                "code": "NOT_STARTED"
-            }));
+            return Err(AppError::auction_not_started());
         }
 
         match item.status.as_str() {
             "SCHEDULED" => {
-                return Err(
-                    serde_json::json!({"error": "경매가 아직 시작되지 않았습니다.", "code": "NOT_STARTED"}),
-                )
+                return Err(AppError::auction_not_started());
             }
             "COMPLETED" => {
-                return Err(
-                    serde_json::json!({"error": "경매가 이미 종료되었습니다.", "code": "ALREADY_ENDED"}),
-                )
+                return Err(AppError::auction_already_ended());
             }
             _ if now > item.end_time => {
-                return Err(
-                    serde_json::json!({"error": "경매가 이미 종료되었습니다.", "code": "ALREADY_ENDED"}),
-                )
+                return Err(AppError::auction_already_ended());
             }
             "ACTIVE" if now <= item.end_time => {
                 if cmd.bid_amount <= item.current_price {
-                    return Err(serde_json::json!({
-                        "error": "입찰 금액이 현재 가격보다 낮습니다.",
-                        "code": "LOW_BID",
-                        "bid_amount": cmd.bid_amount,
-                    }));
+                    return Err(AppError::bid_too_low(item.current_price, cmd.bid_amount));
                 }
 
                 // 입찰 금액이 즉시구매 가격 이상인 경우 낙찰 처리
@@ -100,7 +84,7 @@ pub async fn handle_place_bid(
                         aggregate_id: cmd.item_id,
                         event_type: "BuyNowExecuted".to_string(),
                         data: serde_json::to_value(buy_now_event)
-                            .map_err(|e| serde_json::json!({"error": e.to_string()}))?,
+                            .map_err(|e| AppError::Internal(format!("JSON 직렬화 오류: {}", e)))?,
                         timestamp: now,
                         version: current_version + 1,
                     };
@@ -118,7 +102,7 @@ pub async fn handle_place_bid(
                             retries += 1;
                             continue;
                         }
-                        Err(e) => return Err(serde_json::json!({"error": e})),
+                        Err(e) => return Err(e),
                     }
                 }
 
@@ -135,7 +119,7 @@ pub async fn handle_place_bid(
                     aggregate_id: cmd.item_id,
                     event_type: "BidPlaced".to_string(),
                     data: serde_json::to_value(bid_event)
-                        .map_err(|e| serde_json::json!({"error": e.to_string()}))?,
+                        .map_err(|e| AppError::Internal(format!("JSON 직렬화 오류: {}", e)))?,
                     timestamp: now,
                     version: current_version + 1,
                 };
@@ -151,18 +135,18 @@ pub async fn handle_place_bid(
                         retries += 1;
                         continue;
                     }
-                    Err(e) => return Err(serde_json::json!({"error": e})),
+                    Err(e) => return Err(e),
                 }
             }
             _ => {
-                return Err(
-                    serde_json::json!({"error": "잘못된 경매 상태입니다.", "code": "INVALID_STATUS"}),
-                )
+                return Err(AppError::InvalidState(
+                    "잘못된 경매 상태입니다.".to_string(),
+                ))
             }
         }
     }
 
-    Err(serde_json::json!({"error": "최대 재시도 횟수 초과", "code": "MAX_RETRIES_EXCEEDED"}))
+    Err(AppError::max_retries_exceeded())
 }
 
 /// 2. 즉시 구매(낙찰)
@@ -171,46 +155,33 @@ pub async fn handle_buy_now(
     buy_now_price: i64,
     event_store: &impl EventStore,
     db_manager: &DatabaseManager,
-) -> Result<(), serde_json::Value> {
+) -> Result<()> {
     info!("{:<12} --> 즉시 구매 요청 처리 시작: {:?}", "Command", cmd);
     let mut retries = 0;
 
     while retries < MAX_RETRIES {
         // 현재 버전 조회
-        let current_version = get_item_version(db_manager, cmd.item_id)
-            .await
-            .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
+        let current_version = get_item_version(db_manager, cmd.item_id).await?;
 
         // 아이템 정보 조회
-        let item = handlers::get_item(db_manager, cmd.item_id)
-            .await
-            .map_err(|e| serde_json::json!({"error": e.to_string()}))?;
+        let item = handlers::get_item(db_manager, cmd.item_id).await?;
 
         let now = Utc::now();
 
         // 경매 상태 및 시간 검증
         if now < item.start_time {
-            return Err(serde_json::json!({
-                "error": "경매가 아직 시작되지 않았습니다.",
-                "code": "NOT_STARTED"
-            }));
+            return Err(AppError::auction_not_started());
         }
 
         match item.status.as_str() {
             "SCHEDULED" => {
-                return Err(
-                    serde_json::json!({"error": "경매가 아직 시작되지 않았습니다.", "code": "NOT_STARTED"}),
-                )
+                return Err(AppError::auction_not_started());
             }
             "COMPLETED" => {
-                return Err(
-                    serde_json::json!({"error": "경매가 이미 종료되었습니다.", "code": "ALREADY_ENDED"}),
-                )
+                return Err(AppError::auction_already_ended());
             }
             _ if now > item.end_time => {
-                return Err(
-                    serde_json::json!({"error": "경매가 이미 종료되었습니다.", "code": "ALREADY_ENDED"}),
-                )
+                return Err(AppError::auction_already_ended());
             }
             "ACTIVE" if now <= item.end_time => {
                 // 즉시 구매 이벤트 생성
@@ -226,7 +197,7 @@ pub async fn handle_buy_now(
                     aggregate_id: cmd.item_id,
                     event_type: "BuyNowExecuted".to_string(),
                     data: serde_json::to_value(buy_now_event)
-                        .map_err(|e| serde_json::json!({"error": e.to_string()}))?,
+                        .map_err(|e| AppError::Internal(format!("JSON 직렬화 오류: {}", e)))?,
                     timestamp: now,
                     version: current_version + 1, // 현재 이벤트 버전 + 1
                 };
@@ -244,18 +215,18 @@ pub async fn handle_buy_now(
                         retries += 1;
                         continue;
                     }
-                    Err(e) => return Err(serde_json::json!({"error": e})),
+                    Err(e) => return Err(e),
                 }
             }
             _ => {
-                return Err(
-                    serde_json::json!({"error": "잘못된 경매 상태입니다.", "code": "INVALID_STATUS"}),
-                )
+                return Err(AppError::InvalidState(
+                    "잘못된 경매 상태입니다.".to_string(),
+                ))
             }
         }
     }
 
-    Err(serde_json::json!({"error": "최대 재시도 횟수 초과", "code": "MAX_RETRIES_EXCEEDED"}))
+    Err(AppError::max_retries_exceeded())
 }
 
 // endregion: --- Commands

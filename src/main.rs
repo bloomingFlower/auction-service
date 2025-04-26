@@ -17,6 +17,7 @@ use tracing::{error, info};
 mod auction;
 mod bidding;
 mod database;
+mod error;
 mod event_store;
 mod handlers;
 mod message_broker;

@@ -183,18 +183,32 @@ impl KafkaManager {
     pub async fn initialize(&self) -> Result<(), String> {
         info!("{:<12} --> Kafka 초기화 시작", "Manager");
 
-        // 초기화 토픽 구
-        self.consumer
-            .consumer
-            .subscribe(&["init-topic"])
-            .map_err(|e| e.to_string())?;
+        // 초기화 토픽 구독 시도
+        match self.consumer.consumer.subscribe(&["init-topic"]) {
+            Ok(_) => info!("{:<12} --> Kafka 초기화 토픽 구독 성공", "Manager"),
+            Err(e) => {
+                warn!("{:<12} --> Kafka 초기화 토픽 구독 실패: {:?}", "Manager", e);
+                warn!("{:<12} --> Kafka 없이 계속 진행합니다", "Manager");
+                return Ok(());
+            }
+        }
 
-        // 초기화 메시지 전송
-        self.send_init_message().await?;
+        // 초기화 메시지 전송 시도
+        match self.send_init_message().await {
+            Ok(_) => info!("{:<12} --> Kafka 초기화 메시지 전송 성공", "Manager"),
+            Err(e) => {
+                warn!(
+                    "{:<12} --> Kafka 초기화 메시지 전송 실패: {:?}",
+                    "Manager", e
+                );
+                warn!("{:<12} --> Kafka 없이 계속 진행합니다", "Manager");
+                return Ok(());
+            }
+        }
 
         // 초기화 메시지 수신 대기
         let mut attempts = 0;
-        let max_attempts = 10;
+        let max_attempts = 3; // 시도 횟수 감소
         while attempts < max_attempts {
             match time::timeout(Duration::from_secs(1), self.consumer.consumer.recv()).await {
                 Ok(Ok(message)) => {
@@ -205,10 +219,14 @@ impl KafkaManager {
                         }
                     }
                 }
-                Ok(Err(e)) => error!(
-                    "{:<12} --> Kafka 초기화 메시지 수신 오류: {:?}",
-                    "Manager", e
-                ),
+                Ok(Err(e)) => {
+                    warn!(
+                        "{:<12} --> Kafka 초기화 메시지 수신 오류: {:?}",
+                        "Manager", e
+                    );
+                    warn!("{:<12} --> Kafka 없이 계속 진행합니다", "Manager");
+                    return Ok(());
+                }
                 Err(_) => {
                     attempts += 1;
                     warn!(
@@ -219,7 +237,11 @@ impl KafkaManager {
             }
         }
 
-        Err("Kafka 초기화 메시지 수신 실패".to_string())
+        warn!(
+            "{:<12} --> Kafka 초기화 메시지 수신 실패, Kafka 없이 계속 진행합니다",
+            "Manager"
+        );
+        Ok(())
     }
 
     /// 토픽 생성
@@ -231,10 +253,18 @@ impl KafkaManager {
     ) -> Result<(), String> {
         info!("{:<12} --> Kafka 토픽 생성 시작: {}", "Manager", topic_name);
 
-        let admin_client: AdminClient<DefaultClientContext> = ClientConfig::new()
+        let admin_client: Result<AdminClient<DefaultClientContext>, _> = ClientConfig::new()
             .set("bootstrap.servers", &self.brokers)
-            .create()
-            .map_err(|e| format!("AdminClient 생성 실패: {:?}", e))?;
+            .create();
+
+        let admin_client = match admin_client {
+            Ok(client) => client,
+            Err(e) => {
+                warn!("{:<12} --> AdminClient 생성 실패: {:?}", "Manager", e);
+                warn!("{:<12} --> Kafka 없이 계속 진행합니다", "Manager");
+                return Ok(());
+            }
+        };
 
         let new_topic = NewTopic::new(
             topic_name,
@@ -251,8 +281,9 @@ impl KafkaManager {
                 Ok(())
             }
             Err(e) => {
-                error!("{:<12} --> Kafka 토픽 생성 실패: {:?}", "Manager", e);
-                Err(format!("토픽 생성 실패: {:?}", e))
+                warn!("{:<12} --> Kafka 토픽 생성 실패: {:?}", "Manager", e);
+                warn!("{:<12} --> Kafka 없이 계속 진행합니다", "Manager");
+                Ok(())
             }
         }
     }
